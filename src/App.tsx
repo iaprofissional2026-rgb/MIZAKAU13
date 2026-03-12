@@ -35,7 +35,8 @@ import {
   FileText,
   Upload,
   Heart,
-  MessageSquare
+  MessageSquare,
+  Copy
 } from 'lucide-react';
 
 // Safe LocalStorage Helper
@@ -80,8 +81,9 @@ export default function App() {
     }
   ]);
   const [input, setInput] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [model, setModel] = useState('nvidia/nemotron-3-super-120b-a12b:free');
+  const [model, setModel] = useState('openrouter/healer-alpha');
   const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || import.meta.env.VITE_OPENROUTER_API_KEY || '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');
   const [theme, setTheme] = useState<'masculine' | 'feminine'>(() => (safeLocalStorage.getItem('neural_x_theme') as 'masculine' | 'feminine') || 'masculine');
   const [showSettings, setShowSettings] = useState(false);
@@ -125,7 +127,7 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -478,8 +480,7 @@ export default function App() {
         try {
           const userKey = getActiveGeminiKey();
           if (!userKey || userKey.trim() === '') {
-            setShowKeyManager(true);
-            throw new Error('Chave API necessária para geração de imagens');
+            throw new Error('NO_KEY_FALLBACK');
           }
 
           const ai = new GoogleGenAI({ apiKey: userKey });
@@ -531,13 +532,42 @@ export default function App() {
             throw new Error('Nenhuma imagem retornada pelo Gemini.');
           }
         } catch (error: any) {
-          console.error('Erro na geração de imagem Gemini:', error);
-          setMessages(prev => [...prev, {
-            role: 'system',
-            content: `ERRO NA GERAÇÃO GEMINI: ${error.message || 'Falha desconhecida'}.`,
-            id: Date.now().toString(),
-            timestamp: new Date()
-          }]);
+          console.warn('Erro na geração de imagem Gemini, tentando fallback...', error);
+          
+          try {
+            const width = imageRatio === '16:9' ? 1024 : imageRatio === '9:16' ? 576 : 1024;
+            const height = imageRatio === '16:9' ? 576 : imageRatio === '9:16' ? 1024 : 1024;
+            const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(structuredPrompt)}?width=${width}&height=${height}&nologo=true&enhance=true`;
+            
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: `IMAGEM GERADA (VIA REDE ALTERNATIVA DEVIDO A LIMITE GEMINI): ${prompt.toUpperCase()}`,
+              id: (Date.now() + 1).toString(),
+              timestamp: new Date(),
+              type: 'image',
+              imageUrl: fallbackUrl,
+              prompt: structuredPrompt
+            }]);
+            setIsLoading(false);
+            return;
+          } catch (fallbackErr) {
+            let cleanMessage = error.message || 'Falha desconhecida';
+            if (cleanMessage.includes('429') || cleanMessage.includes('quota') || cleanMessage.includes('RESOURCE_EXHAUSTED')) {
+              cleanMessage = 'Sua chave Gemini excedeu o limite de cota gratuita (Erro 429). Por favor, ative o faturamento no Google Cloud ou use uma chave com créditos.';
+            } else if (cleanMessage.includes('{')) {
+              try {
+                const parsed = JSON.parse(cleanMessage.substring(cleanMessage.indexOf('{')));
+                cleanMessage = parsed.error?.message || cleanMessage;
+              } catch (e) {}
+            }
+            
+            setMessages(prev => [...prev, {
+              role: 'system',
+              content: `ERRO NA GERAÇÃO GEMINI: ${cleanMessage}`,
+              id: Date.now().toString(),
+              timestamp: new Date()
+            }]);
+          }
         }
       }
     }
@@ -620,55 +650,121 @@ export default function App() {
 
       let content = '';
       
-      try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            messages: [systemInstruction, ...recentMessages, userMessage].map(m => ({ role: m.role, content: m.content })),
-            model: model || "nvidia/nemotron-3-super-120b-a12b:free"
-          })
-        });
+      const fallbackModels = [
+        "openrouter/healer-alpha"
+      ];
+      
+      const currentModel = model || "openrouter/healer-alpha";
+      const modelsToTry = [currentModel, ...fallbackModels.filter(m => m !== currentModel)];
+      
+      let success = false;
+      let lastError: any = null;
+      let messageId = (Date.now() + 1).toString();
 
-        const data = await response.json();
+      for (const modelToTry of modelsToTry) {
+        try {
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+              messages: [systemInstruction, ...recentMessages, userMessage].map(m => ({ role: m.role, content: m.content })),
+              model: modelToTry,
+              stream: true
+            })
+          });
 
-        if (!response.ok) {
-          let errorMessage = data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.';
-          if (typeof errorMessage === 'string') {
-            if (errorMessage.includes("No endpoints found")) {
-              errorMessage = "Modelo temporariamente indisponível neste nó. Tente outro modelo gratuito.";
-            } else if (errorMessage.includes("Provider returned error")) {
-              errorMessage = "O provedor da IA retornou um erro. Tente novamente em instantes.";
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            let errorMessage = data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.';
+            
+            if (typeof errorMessage === 'string') {
+              if (errorMessage.includes("No endpoints found") || 
+                  errorMessage.includes("Provider returned error") ||
+                  errorMessage.includes("502") ||
+                  errorMessage.includes("503") ||
+                  errorMessage.includes("temporarily unavailable")) {
+                throw new Error(`TEMPORARY_ERROR: ${errorMessage}`);
+              } else if (errorMessage.includes("limit") || errorMessage.includes("quota") || errorMessage.includes("429")) {
+                throw new Error(`FATAL_ERROR: Limite de cota da chave OpenRouter atingido. Insira uma nova chave nas configurações.`);
+              } else if (errorMessage.toLowerCase().includes("user not found") || errorMessage.includes("401")) {
+                throw new Error(`FATAL_ERROR: Chave da OpenRouter inválida ou não encontrada. Por favor, insira uma chave válida nas Configurações ⚙️.`);
+              }
+            }
+            throw new Error(`TEMPORARY_ERROR: ${errorMessage}`);
+          }
+
+          const reader = response.body?.getReader();
+          const decoder = new TextDecoder();
+          
+          if (!reader) throw new Error("TEMPORARY_ERROR: Stream not available");
+
+          // Only add the message placeholder once
+          if (!success && content === '') {
+            setMessages(prev => {
+              // Remove any previous failed attempts
+              const filtered = prev.filter(m => m.id !== messageId);
+              return [...filtered, {
+                role: 'assistant',
+                content: '',
+                id: messageId,
+                timestamp: new Date()
+              }];
+            });
+          }
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  const text = data.choices[0]?.delta?.content || '';
+                  content += text;
+                  
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === messageId ? { ...msg, content: content } : msg
+                  ));
+                } catch (e) {
+                  // Ignore parse errors for incomplete chunks
+                }
+              }
             }
           }
-          throw new Error(errorMessage);
-        }
-
-        content = data.choices[0].message.content;
-      } catch (openRouterError: any) {
-        console.warn("OpenRouter falhou, tentando fallback para Gemini...", openRouterError);
-        const geminiKey = getActiveGeminiKey();
-        if (geminiKey && geminiKey.trim() !== '') {
-          try {
-            const ai = new GoogleGenAI({ apiKey: geminiKey });
-            const geminiMessages = recentMessages.map(m => ({
-              role: m.role === 'assistant' ? 'model' : 'user',
-              parts: [{ text: m.content }]
-            }));
-            const geminiResponse = await ai.models.generateContent({
-              model: 'gemini-3-flash-preview',
-              contents: [...geminiMessages, { role: 'user', parts: [{ text: userMessage.content }] }],
-              config: {
-                systemInstruction: systemInstruction.content
-              }
-            });
-            content = geminiResponse.text || '';
-          } catch (geminiError: any) {
-            throw new Error(`Falha OpenRouter (${openRouterError.message}) e Falha Gemini (${geminiError.message})`);
+          
+          success = true;
+          break; // Break the retry loop if successful
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Model ${modelToTry} failed:`, err.message);
+          
+          // If it's a fatal error, break the loop and don't retry
+          if (err.message.startsWith('FATAL_ERROR:')) {
+            break;
           }
-        } else {
-          throw openRouterError;
+          // Otherwise, it's a temporary error, so it will continue to the next model in the loop
         }
+      }
+
+      if (!success) {
+        let finalError = lastError?.message || "Erro desconhecido";
+        
+        if (finalError.startsWith('FATAL_ERROR: ')) {
+           finalError = finalError.replace('FATAL_ERROR: ', '');
+        } else if (finalError.startsWith('TEMPORARY_ERROR: ')) {
+           finalError = "Todos os modelos gratuitos estão temporariamente sobrecarregados. Por favor, tente novamente em alguns minutos.";
+        } else if (finalError.toLowerCase().includes("user not found")) {
+          finalError = "Chave da OpenRouter inválida ou não encontrada. Por favor, insira uma chave válida nas Configurações ⚙️.";
+        }
+        
+        // Remove the empty placeholder message if it was added
+        setMessages(prev => prev.filter(m => m.id !== messageId));
+        
+        throw new Error(`Falha no Chat (OpenRouter): ${finalError}`);
       }
       
       // Check if AI responded with an image command (Regex for better detection)
@@ -680,11 +776,15 @@ export default function App() {
           ? prompt 
           : `Prompt: ${prompt}, ${imageStyle}, ${imageQuality}, highly detailed Negative Prompt: blurry, distorted, low quality, bad anatomy, deformed`;
 
+        // Update UI to show it's generating an image
+        setMessages(prev => prev.map(msg => 
+          msg.content === content ? { ...msg, content: content + '\n\n[GERANDO IMAGEM...]' } : msg
+        ));
+
         try {
           const userKey = getActiveGeminiKey();
           if (!userKey || userKey.trim() === '') {
-            setShowKeyManager(true);
-            throw new Error('Chave API necessária para geração de imagens');
+            throw new Error('NO_KEY_FALLBACK');
           }
 
           const ai = new GoogleGenAI({ apiKey: userKey });
@@ -719,33 +819,54 @@ export default function App() {
           }
 
           if (imageUrl) {
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: `IMAGEM GERADA VIA GEMINI: ${prompt.toUpperCase()}`,
-              id: (Date.now() + 1).toString(),
-              timestamp: new Date(),
-              type: 'image',
-              imageUrl: imageUrl,
-              prompt: structuredPrompt
-            }]);
+            setMessages(prev => prev.map(msg => 
+              msg.content.includes('[GERANDO IMAGEM...]') ? {
+                ...msg,
+                content: `IMAGEM GERADA VIA GEMINI: ${prompt.toUpperCase()}`,
+                type: 'image',
+                imageUrl: imageUrl,
+                prompt: structuredPrompt
+              } : msg
+            ));
           }
         } catch (err: any) {
-          console.error('Erro na geração automática Gemini:', err);
-          setMessages(prev => [...prev, {
-            role: 'system',
-            content: `FALHA NA GERAÇÃO DE IMAGEM: ${err.message || 'Erro desconhecido'}. Verifique sua chave Gemini nas configurações.`,
-            id: Date.now().toString(),
-            timestamp: new Date()
-          }]);
+          console.warn('Erro na geração automática Gemini, tentando fallback gratuito...', err);
+          
+          // Fallback to Pollinations.ai if Gemini fails (e.g., due to quota limits)
+          try {
+            const width = imageRatio === '16:9' ? 1024 : imageRatio === '9:16' ? 576 : 1024;
+            const height = imageRatio === '16:9' ? 576 : imageRatio === '9:16' ? 1024 : 1024;
+            const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(structuredPrompt)}?width=${width}&height=${height}&nologo=true&enhance=true`;
+            
+            setMessages(prev => prev.map(msg => 
+              msg.content.includes('[GERANDO IMAGEM...]') ? {
+                ...msg,
+                content: `IMAGEM GERADA (VIA REDE ALTERNATIVA DEVIDO A LIMITE GEMINI): ${prompt.toUpperCase()}`,
+                type: 'image',
+                imageUrl: fallbackUrl,
+                prompt: structuredPrompt
+              } : msg
+            ));
+          } catch (fallbackErr) {
+            // If even the fallback fails, show a clean error message
+            let cleanMessage = err.message || 'Erro desconhecido';
+            if (cleanMessage.includes('429') || cleanMessage.includes('quota') || cleanMessage.includes('RESOURCE_EXHAUSTED')) {
+              cleanMessage = 'Sua chave Gemini excedeu o limite de cota gratuita (Erro 429). Por favor, ative o faturamento no Google Cloud ou use uma chave com créditos.';
+            } else if (cleanMessage.includes('{')) {
+              try {
+                const parsed = JSON.parse(cleanMessage.substring(cleanMessage.indexOf('{')));
+                cleanMessage = parsed.error?.message || cleanMessage;
+              } catch (e) {}
+            }
+            
+            setMessages(prev => prev.map(msg => 
+              msg.content.includes('[GERANDO IMAGEM...]') ? {
+                ...msg,
+                content: `FALHA NA GERAÇÃO DE IMAGEM: ${cleanMessage}`
+              } : msg
+            ));
+          }
         }
-      } else {
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: content,
-          id: (Date.now() + 1).toString(),
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, assistantMessage]);
       }
     } catch (error: any) {
       console.error(error);
@@ -794,7 +915,7 @@ export default function App() {
         },
         body: JSON.stringify({
           messages: [{ role: 'user', content: 'ping' }],
-          model: model || "nvidia/nemotron-3-super-120b-a12b:free"
+          model: model || "openrouter/healer-alpha"
         })
       });
       
@@ -807,6 +928,12 @@ export default function App() {
       setTestStatus('error');
     }
     setTimeout(() => setTestStatus('idle'), 3000);
+  };
+
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
   const downloadImage = (imageUrl: string) => {
@@ -881,8 +1008,7 @@ export default function App() {
                 onChange={(e) => setModel(e.target.value)}
                 className="hidden sm:block bg-transparent text-[10px] font-mono text-white/60 outline-none cursor-pointer hover:text-primary transition-colors max-w-[100px] truncate"
               >
-                <option value="nvidia/nemotron-3-super-120b-a12b:free">NEMOTRON-3 (FREE)</option>
-                <option value="openai/gpt-oss-120b:free">GPT-OSS 120B (FREE)</option>
+                <option value="openrouter/healer-alpha">HEALER ALPHA</option>
               </select>
             </div>
           </div>
@@ -1018,9 +1144,20 @@ export default function App() {
                         <p className="text-[10px] font-mono text-white/40 italic leading-tight">Prompt: {msg.content.replace('GERANDO IMAGEM: ', '')}</p>
                       </div>
                     ) : (
-                      <p className={`text-xs md:text-sm leading-relaxed ${msg.role === 'assistant' ? 'font-mono text-white/90' : 'text-white/80'}`}>
-                        {msg.content}
-                      </p>
+                      <div className="relative group/msg">
+                        <p className={`text-xs md:text-sm leading-relaxed ${msg.role === 'assistant' ? 'font-mono text-white/90 pr-6' : 'text-white/80'}`}>
+                          {msg.role === 'assistant' ? msg.content.replace(/\*/g, '') : msg.content}
+                        </p>
+                        {msg.role === 'assistant' && (
+                          <button
+                            onClick={() => handleCopy(msg.content.replace(/\*/g, ''), msg.id)}
+                            className="absolute top-0 right-0 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-all opacity-0 group-hover/msg:opacity-100 focus:opacity-100"
+                            title="Copiar mensagem"
+                          >
+                            {copiedId === msg.id ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1564,19 +1701,13 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Modelo Neural (GRATUITOS)</label>
+                  <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Modelo Neural</label>
                   <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                     <ModelOption 
-                      selected={model === 'nvidia/nemotron-3-super-120b-a12b:free'} 
-                      onClick={() => setModel('nvidia/nemotron-3-super-120b-a12b:free')}
-                      label="Nemotron 3 Super (Free)"
-                      desc="Poder computacional NVIDIA"
-                    />
-                    <ModelOption 
-                      selected={model === 'openai/gpt-oss-120b:free'} 
-                      onClick={() => setModel('openai/gpt-oss-120b:free')}
-                      label="GPT-OSS 120B (Free)"
-                      desc="Arquitetura OpenAI Open Source"
+                      selected={model === 'openrouter/healer-alpha'} 
+                      onClick={() => setModel('openrouter/healer-alpha')}
+                      label="Healer Alpha"
+                      desc="Modelo OpenRouter"
                     />
                   </div>
                 </div>
