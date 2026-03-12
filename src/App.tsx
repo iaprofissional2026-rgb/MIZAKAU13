@@ -618,30 +618,58 @@ export default function App() {
       const historyLimit = 10;
       const recentMessages = messages.slice(-historyLimit);
 
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          messages: [systemInstruction, ...recentMessages, userMessage].map(m => ({ role: m.role, content: m.content })),
-          model: model || "nvidia/nemotron-3-super-120b-a12b:free"
-        })
-      });
+      let content = '';
+      
+      try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            messages: [systemInstruction, ...recentMessages, userMessage].map(m => ({ role: m.role, content: m.content })),
+            model: model || "nvidia/nemotron-3-super-120b-a12b:free"
+          })
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        let errorMessage = data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.';
-        if (typeof errorMessage === 'string') {
-          if (errorMessage.includes("No endpoints found")) {
-            errorMessage = "Modelo temporariamente indisponível neste nó. Tente outro modelo gratuito.";
-          } else if (errorMessage.includes("Provider returned error")) {
-            errorMessage = "O provedor da IA retornou um erro. Tente novamente em instantes.";
+        if (!response.ok) {
+          let errorMessage = data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.';
+          if (typeof errorMessage === 'string') {
+            if (errorMessage.includes("No endpoints found")) {
+              errorMessage = "Modelo temporariamente indisponível neste nó. Tente outro modelo gratuito.";
+            } else if (errorMessage.includes("Provider returned error")) {
+              errorMessage = "O provedor da IA retornou um erro. Tente novamente em instantes.";
+            }
           }
+          throw new Error(errorMessage);
         }
-        throw new Error(errorMessage);
-      }
 
-      const content = data.choices[0].message.content;
+        content = data.choices[0].message.content;
+      } catch (openRouterError: any) {
+        console.warn("OpenRouter falhou, tentando fallback para Gemini...", openRouterError);
+        const geminiKey = getActiveGeminiKey();
+        if (geminiKey && geminiKey.trim() !== '') {
+          try {
+            const ai = new GoogleGenAI({ apiKey: geminiKey });
+            const geminiMessages = recentMessages.map(m => ({
+              role: m.role === 'assistant' ? 'model' : 'user',
+              parts: [{ text: m.content }]
+            }));
+            const geminiResponse = await ai.models.generateContent({
+              model: 'gemini-3-flash-preview',
+              contents: [...geminiMessages, { role: 'user', parts: [{ text: userMessage.content }] }],
+              config: {
+                systemInstruction: systemInstruction.content
+              }
+            });
+            content = geminiResponse.text || '';
+          } catch (geminiError: any) {
+            throw new Error(`Falha OpenRouter (${openRouterError.message}) e Falha Gemini (${geminiError.message})`);
+          }
+        } else {
+          throw openRouterError;
+        }
+      }
       
       // Check if AI responded with an image command (Regex for better detection)
       const imagineMatch = content.match(/\/imagine\s+(.*)/i);
