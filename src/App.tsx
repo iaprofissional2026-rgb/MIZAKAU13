@@ -82,7 +82,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [model, setModel] = useState('nvidia/nemotron-3-super-120b-a12b:free');
-  const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || '');
+  const [userApiKey, setUserApiKey] = useState(() => import.meta.env.VITE_OPENROUTER_API_KEY || safeLocalStorage.getItem('neural_x_api_key') || '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');
   const [theme, setTheme] = useState<'masculine' | 'feminine'>(() => (safeLocalStorage.getItem('neural_x_theme') as 'masculine' | 'feminine') || 'masculine');
   const [showSettings, setShowSettings] = useState(false);
   const [showKeyManager, setShowKeyManager] = useState(false);
@@ -607,26 +607,38 @@ export default function App() {
         content: 'Você é o NEURAL-X, um assistente de inteligência superior, futurista e ultra-profissional. Responda sempre em PORTUGUÊS. PROIBIDO o uso de asteriscos (*) ou qualquer formatação markdown visual. Forneça apenas a informação direta e inteligente que o usuário necessita. Se o usuário pedir para gerar uma imagem, você DEVE responder EXCLUSIVAMENTE com o comando no seguinte formato: "/imagine Prompt: (subject), (appearance), (environment), (art style), (lighting), (camera/framing), (quality), (extra details) Negative Prompt: (unwanted elements)". Use sempre INGLÊS para os prompts dentro do comando para garantir a melhor qualidade visual.'
       };
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      headers['x-api-key'] = userApiKey.trim();
+      const headers: Record<string, string> = { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${userApiKey.trim()}`,
+        'HTTP-Referer': window.location.origin,
+        'X-Title': 'NEURAL-X Mobile'
+      };
 
       // Limit history to last 10 messages to avoid context/rate issues with free models
       const historyLimit = 10;
       const recentMessages = messages.slice(-historyLimit);
 
-      const response = await fetch('/api/chat', {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
           messages: [systemInstruction, ...recentMessages, userMessage].map(m => ({ role: m.role, content: m.content })),
-          model: model
+          model: model || "nvidia/nemotron-3-super-120b-a12b:free"
         })
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.');
+        let errorMessage = data.error?.message || data.error || 'Falha na comunicação com o nó NEURAL-X.';
+        if (typeof errorMessage === 'string') {
+          if (errorMessage.includes("No endpoints found")) {
+            errorMessage = "Modelo temporariamente indisponível neste nó. Tente outro modelo gratuito.";
+          } else if (errorMessage.includes("Provider returned error")) {
+            errorMessage = "O provedor da IA retornou um erro. Tente novamente em instantes.";
+          }
+        }
+        throw new Error(errorMessage);
       }
 
       const content = data.choices[0].message.content;
@@ -738,15 +750,17 @@ export default function App() {
     if (!userApiKey.trim()) return;
     setTestStatus('testing');
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-api-key': userApiKey.trim()
+          'Authorization': `Bearer ${userApiKey.trim()}`,
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'NEURAL-X Mobile'
         },
         body: JSON.stringify({
           messages: [{ role: 'user', content: 'ping' }],
-          model: model
+          model: model || "nvidia/nemotron-3-super-120b-a12b:free"
         })
       });
       
