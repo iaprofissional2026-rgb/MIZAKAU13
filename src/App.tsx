@@ -82,7 +82,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [model, setModel] = useState('nvidia/nemotron-3-super-120b-a12b:free');
-  const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || import.meta.env.VITE_OPENROUTER_API_KEY || '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');
+  const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || (import.meta as any).env.VITE_OPENROUTER_API_KEY || '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');
   const [theme, setTheme] = useState<'masculine' | 'feminine'>(() => (safeLocalStorage.getItem('neural_x_theme') as 'masculine' | 'feminine') || 'masculine');
   const [showSettings, setShowSettings] = useState(false);
   const [showKeyManager, setShowKeyManager] = useState(false);
@@ -370,7 +370,7 @@ export default function App() {
     if (geminiKeys.length > 0 && geminiKeys[activeGeminiKeyIndex]) {
       return geminiKeys[activeGeminiKeyIndex].key;
     }
-    return '';
+    return (import.meta as any).env.VITE_GEMINI_API_KEY || userApiKey || '';
   };
 
   const handleSend = async (e?: React.FormEvent) => {
@@ -482,41 +482,61 @@ export default function App() {
             throw new Error('Chave API necessária para geração de imagens');
           }
 
-          const ai = new GoogleGenAI({ apiKey: userKey });
-          
-          const parts: any[] = [];
-          if (currentUploadedImage) {
-            parts.push({
-              inlineData: {
-                data: currentUploadedImage.data,
-                mimeType: currentUploadedImage.mimeType
+          let imageUrl = '';
+
+          if (userKey.startsWith('sk-or')) {
+            // Usa OpenRouter (Pollinations) para gerar a imagem
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${userKey.trim()}`,
+                'HTTP-Referer': window.location.origin,
+                'X-Title': 'NEURAL-X Mobile'
+              },
+              body: JSON.stringify({
+                model: "pollinations/pno-fast",
+                messages: [{ role: 'user', content: structuredPrompt }]
+              })
+            });
+
+            if (!response.ok) throw new Error('Falha na conexão com OpenRouter para imagens');
+            
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content || '';
+            const match = content.match(/\!\[.*?\]\((.*?)\)/);
+            
+            if (match && match[1]) {
+              imageUrl = match[1];
+            } else if (content.startsWith('http')) {
+              imageUrl = content;
+            } else {
+              // Fallback direto se a API não retornar markdown esperado
+              imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
+            }
+          } else {
+            // Usa Gemini
+            const ai = new GoogleGenAI({ apiKey: userKey });
+            
+            const response = await ai.models.generateImages({
+              model: 'imagen-3.0-generate-002',
+              prompt: structuredPrompt,
+              config: {
+                numberOfImages: 1,
+                aspectRatio: imageRatio as any,
+                outputMimeType: 'image/jpeg'
               }
             });
-          }
-          parts.push({ text: structuredPrompt });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
-            contents: [{ parts }],
-            config: {
-              imageConfig: {
-                aspectRatio: imageRatio as any
-              }
-            }
-          });
-
-          let imageUrl = '';
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-              imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-              break;
+            if (response.generatedImages && response.generatedImages.length > 0) {
+              imageUrl = `data:image/jpeg;base64,${response.generatedImages[0].image.imageBytes}`;
             }
           }
 
           if (imageUrl) {
             const assistantMessage: Message = {
               role: 'assistant',
-              content: `IMAGEM GERADA VIA GEMINI: ${prompt.toUpperCase()}`,
+              content: `IMAGEM GERADA: ${prompt.toUpperCase()}`,
               id: (Date.now() + 1).toString(),
               timestamp: new Date(),
               type: 'image',
@@ -528,13 +548,13 @@ export default function App() {
             setIsLoading(false);
             return;
           } else {
-            throw new Error('Nenhuma imagem retornada pelo Gemini.');
+            throw new Error('Nenhuma imagem retornada pela API.');
           }
         } catch (error: any) {
-          console.error('Erro na geração de imagem Gemini:', error);
+          console.error('Erro na geração de imagem:', error);
           setMessages(prev => [...prev, {
             role: 'system',
-            content: `ERRO NA GERAÇÃO GEMINI: ${error.message || 'Falha desconhecida'}.`,
+            content: `ERRO NA GERAÇÃO: ${error.message || 'Falha desconhecida'}.`,
             id: Date.now().toString(),
             timestamp: new Date()
           }]);
@@ -687,53 +707,74 @@ export default function App() {
             throw new Error('Chave API necessária para geração de imagens');
           }
 
-          const ai = new GoogleGenAI({ apiKey: userKey });
-          
-          const parts: any[] = [];
-          if (currentUploadedImage) {
-            parts.push({
-              inlineData: {
-                data: currentUploadedImage.data,
-                mimeType: currentUploadedImage.mimeType
+          let imageUrl = '';
+
+          if (userKey.startsWith('sk-or')) {
+            // Usa OpenRouter (Pollinations) para gerar a imagem
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${userKey.trim()}`,
+                'HTTP-Referer': window.location.origin,
+                'X-Title': 'NEURAL-X Mobile'
+              },
+              body: JSON.stringify({
+                model: "pollinations/pno-fast",
+                messages: [{ role: 'user', content: structuredPrompt }]
+              })
+            });
+
+            if (!response.ok) throw new Error('Falha na conexão com OpenRouter para imagens');
+            
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content || '';
+            const match = content.match(/\!\[.*?\]\((.*?)\)/);
+            
+            if (match && match[1]) {
+              imageUrl = match[1];
+            } else if (content.startsWith('http')) {
+              imageUrl = content;
+            } else {
+              imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
+            }
+          } else {
+            // Usa Gemini
+            const ai = new GoogleGenAI({ apiKey: userKey });
+            
+            const response = await ai.models.generateImages({
+              model: 'imagen-3.0-generate-002',
+              prompt: structuredPrompt,
+              config: {
+                numberOfImages: 1,
+                aspectRatio: imageRatio as any,
+                outputMimeType: 'image/jpeg'
               }
             });
-          }
-          parts.push({ text: structuredPrompt });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
-            contents: [{ parts }],
-            config: {
-              imageConfig: {
-                aspectRatio: imageRatio as any
-              }
-            }
-          });
-
-          let imageUrl = '';
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-              imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-              break;
+            if (response.generatedImages && response.generatedImages.length > 0) {
+              imageUrl = `data:image/jpeg;base64,${response.generatedImages[0].image.imageBytes}`;
             }
           }
 
           if (imageUrl) {
             setMessages(prev => [...prev, {
               role: 'assistant',
-              content: `IMAGEM GERADA VIA GEMINI: ${prompt.toUpperCase()}`,
+              content: `IMAGEM GERADA: ${prompt.toUpperCase()}`,
               id: (Date.now() + 1).toString(),
               timestamp: new Date(),
               type: 'image',
               imageUrl: imageUrl,
               prompt: structuredPrompt
             }]);
+          } else {
+            throw new Error('Nenhuma imagem retornada pela API.');
           }
         } catch (err: any) {
           console.error('Erro na geração automática Gemini:', err);
           setMessages(prev => [...prev, {
             role: 'system',
-            content: `FALHA NA GERAÇÃO DE IMAGEM: ${err.message || 'Erro desconhecido'}. Verifique sua chave Gemini nas configurações.`,
+            content: `FALHA NA GERAÇÃO DE IMAGEM: ${err.message || 'Erro desconhecido'}. Verifique sua chave nas configurações.`,
             id: Date.now().toString(),
             timestamp: new Date()
           }]);
