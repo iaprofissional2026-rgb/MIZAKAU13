@@ -82,7 +82,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [model, setModel] = useState('nvidia/nemotron-3-super-120b-a12b:free');
-  const [userApiKey, setUserApiKey] = useState(() => import.meta.env.VITE_OPENROUTER_API_KEY || safeLocalStorage.getItem('neural_x_api_key') || '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');
+  const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || import.meta.env.VITE_OPENROUTER_API_KEY || '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');
   const [theme, setTheme] = useState<'masculine' | 'feminine'>(() => (safeLocalStorage.getItem('neural_x_theme') as 'masculine' | 'feminine') || 'masculine');
   const [showSettings, setShowSettings] = useState(false);
   const [showKeyManager, setShowKeyManager] = useState(false);
@@ -701,8 +701,14 @@ export default function App() {
               prompt: structuredPrompt
             }]);
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error('Erro na geração automática Gemini:', err);
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: `FALHA NA GERAÇÃO DE IMAGEM: ${err.message || 'Erro desconhecido'}. Verifique sua chave Gemini nas configurações.`,
+            id: Date.now().toString(),
+            timestamp: new Date()
+          }]);
         }
       } else {
         const assistantMessage: Message = {
@@ -718,7 +724,7 @@ export default function App() {
       const errorMessage = error.message || 'FALHA NA CONEXÃO';
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `LIMITE DE COTA ATINGIDO. POR FAVOR, ADICIONE UMA NOVA CHAVE DE API NAS CONFIGURAÇÕES PARA CONTINUAR.`,
+        content: `ERRO DE SISTEMA: ${errorMessage.toUpperCase()}`,
         id: Date.now().toString(),
         timestamp: new Date()
       }]);
