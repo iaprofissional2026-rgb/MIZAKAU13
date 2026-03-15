@@ -1727,98 +1727,101 @@ export default function App() {
                   </button>
                 </div>
               </div>
-            </div>
-          </form>
-
-          {/* Image Options Menu */}
-          <AnimatePresence>
-            {showImageOptions && (
-              <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="absolute bottom-full left-0 right-0 mb-4 mx-auto max-w-4xl bg-zinc-900 rounded-3xl border border-white/10 p-6 shadow-2xl z-30"
-              >
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
-                  {/* Style Selection */}
-                  <div className="space-y-2 col-span-2 md:col-span-1">
-                    <div className="flex items-center gap-2 text-primary">
-                      <Palette size={12} className="md:w-3.5 md:h-3.5" />
-                      <span className="text-[9px] md:text-[10px] font-mono font-bold uppercase tracking-widest">Estilo Artístico</span>
+            {/* Image Options Menu moved inside form for correct relative positioning */}
+            <AnimatePresence>
+              {showImageOptions && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                  className="absolute bottom-full left-0 right-0 mb-4 mx-auto max-w-4xl bg-zinc-900 rounded-3xl border border-white/10 p-4 md:p-6 shadow-2xl z-30 max-h-[65vh] overflow-y-auto custom-scrollbar"
+                >
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
+                    {/* Style Selection */}
+                    <div className="space-y-2 col-span-2 md:col-span-1">
+                      <div className="flex items-center gap-2 text-primary">
+                        <Palette size={12} className="md:w-3.5 md:h-3.5" />
+                        <span className="text-[9px] md:text-[10px] font-mono font-bold uppercase tracking-widest">Estilo Artístico</span>
+                      </div>
+                      <div className="grid grid-cols-3 md:grid-cols-2 gap-1.5 md:gap-2">
+                        {['cinematic', 'photorealistic', 'digital art', 'anime', 'cyberpunk', 'sketch'].map(s => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setImageStyle(s)}
+                            className={`py-1.5 px-1 rounded-lg text-[7px] md:text-[9px] font-mono uppercase transition-all border truncate ${
+                              imageStyle === s ? 'bg-primary/20 border-primary/40 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                            }`}
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-3 md:grid-cols-2 gap-1.5 md:gap-2">
-                      {['cinematic', 'photorealistic', 'digital art', 'anime', 'cyberpunk', 'sketch'].map(s => (
-                        <button
-                          key={s}
-                          onClick={() => setImageStyle(s)}
-                          className={`py-1.5 px-1 rounded-lg text-[7px] md:text-[9px] font-mono uppercase transition-all border truncate ${
-                            imageStyle === s ? 'bg-primary/20 border-primary/40 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
-                          }`}
-                        >
-                          {s}
-                        </button>
-                      ))}
+
+                    {/* Aspect Ratio Selection */}
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 text-secondary">
+                        <Maximize size={14} />
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-widest">Formato</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {['1:1', '16:9', '9:16', '4:3', '3:4'].map(r => (
+                          <button
+                            key={r}
+                            type="button"
+                            onClick={() => setImageRatio(r)}
+                            className={`py-2 px-2 rounded-xl text-[8px] md:text-[9px] font-mono uppercase transition-all border ${
+                              imageRatio === r ? 'bg-secondary/20 border-secondary/40 text-secondary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                            }`}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Quality Selection */}
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 text-primary">
+                        <Highlighter size={14} />
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-widest">Qualidade</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2">
+                        {[
+                          { id: 'standard', label: 'Padrão' },
+                          { id: 'high', label: 'Alta Def.' },
+                          { id: 'masterpiece', label: 'Obra de Arte' }
+                        ].map(q => (
+                          <button
+                            key={q.id}
+                            type="button"
+                            onClick={() => setImageQuality(q.id)}
+                            className={`py-2 px-2 rounded-xl text-[8px] md:text-[9px] font-mono uppercase transition-all border text-left flex justify-between items-center ${
+                              imageQuality === q.id ? 'bg-primary/20 border-primary/40 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                            }`}
+                          >
+                            {q.label}
+                            {imageQuality === q.id && <Check size={10} />}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-
-                  {/* Aspect Ratio Selection */}
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-secondary">
-                      <Maximize size={14} />
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-widest">Formato</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {['1:1', '16:9', '9:16', '4:3', '3:4'].map(r => (
-                        <button
-                          key={r}
-                          onClick={() => setImageRatio(r)}
-                          className={`py-2 px-2 rounded-xl text-[8px] md:text-[9px] font-mono uppercase transition-all border ${
-                            imageRatio === r ? 'bg-secondary/20 border-secondary/40 text-secondary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
-                          }`}
-                        >
-                          {r}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="mt-6 pt-4 border-t border-white/5 flex justify-end">
+                    <button 
+                      type="button"
+                      onClick={() => setShowImageOptions(false)}
+                      className="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-[10px] font-mono font-bold rounded-xl transition-all"
+                    >
+                      APLICAR E FECHAR
+                    </button>
                   </div>
-
-                  {/* Quality Selection */}
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-primary">
-                      <Highlighter size={14} />
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-widest">Qualidade</span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      {[
-                        { id: 'standard', label: 'Padrão' },
-                        { id: 'high', label: 'Alta Def.' },
-                        { id: 'masterpiece', label: 'Obra de Arte' }
-                      ].map(q => (
-                        <button
-                          key={q.id}
-                          onClick={() => setImageQuality(q.id)}
-                          className={`py-2 px-2 rounded-xl text-[8px] md:text-[9px] font-mono uppercase transition-all border text-left flex justify-between items-center ${
-                            imageQuality === q.id ? 'bg-primary/20 border-primary/40 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
-                          }`}
-                        >
-                          {q.label}
-                          {imageQuality === q.id && <Check size={10} />}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-6 pt-4 border-t border-white/5 flex justify-end">
-                  <button 
-                    onClick={() => setShowImageOptions(false)}
-                    className="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-[10px] font-mono font-bold rounded-xl transition-all"
-                  >
-                    APLICAR E FECHAR
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </form>
           
           <div className="mt-3 flex justify-center gap-4 md:gap-6 text-[8px] md:text-[10px] font-mono text-white/20 uppercase tracking-[0.15em]">
             <div className="flex items-center gap-1.5">
