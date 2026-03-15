@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
@@ -27,6 +28,7 @@ import {
   Maximize,
   Palette,
   Highlighter,
+  Menu,
   ExternalLink,
   Download,
   DownloadCloud,
@@ -36,7 +38,11 @@ import {
   Upload,
   Heart,
   MessageSquare,
-  Copy
+  Copy,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 
 // Safe LocalStorage Helper
@@ -54,6 +60,8 @@ const safeLocalStorage = {
   removeItem: (key: string) => localStorage.removeItem(key),
   clear: () => localStorage.clear()
 };
+
+const generateId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
 interface GeminiKey {
   id: string;
@@ -83,7 +91,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [model, setModel] = useState('openrouter/healer-alpha');
+  const [model, setModel] = useState('qwen/qwen-2.5-72b-instruct:free');
   const [userApiKey, setUserApiKey] = useState(() => safeLocalStorage.getItem('neural_x_api_key') || import.meta.env.VITE_OPENROUTER_API_KEY || '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');
   const [theme, setTheme] = useState<'masculine' | 'feminine'>(() => (safeLocalStorage.getItem('neural_x_theme') as 'masculine' | 'feminine') || 'masculine');
   const [showSettings, setShowSettings] = useState(false);
@@ -101,14 +109,43 @@ export default function App() {
     const saved = safeLocalStorage.getItem('neural_x_brain_profile');
     return saved ? JSON.parse(saved) : null;
   });
-  const [favoritePersonas, setFavoritePersonas] = useState<{ id: string, name: string, description: string, docs: { name: string, content: string, type: string }[] }[]>(() => {
-    const saved = safeLocalStorage.getItem('neural_x_favorites');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [favoritePersonas, setFavoritePersonas] = useState<{ id: string, name: string, description: string, docs: { name: string, content: string, type: string }[] }[]>([]);
+  const [savedChats, setSavedChats] = useState<{ id: string, assistant_id: string, title: string, messages: Message[], updated_at: string }[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [showSidebar, setShowSidebar] = useState(false);
   
+  useEffect(() => {
+    const fetchAssistants = async () => {
+      try {
+        const response = await fetch('/api/assistants');
+        if (response.ok) {
+          const data = await response.json();
+          setFavoritePersonas(data);
+        }
+      } catch (error) {
+        console.error("Erro ao carregar assistentes:", error);
+      }
+    };
+    fetchAssistants();
+
+    const fetchChats = async () => {
+      try {
+        const response = await fetch('/api/chats');
+        if (response.ok) {
+          const data = await response.json();
+          setSavedChats(data);
+        }
+      } catch (error) {
+        console.error("Erro ao carregar conversas:", error);
+      }
+    };
+    fetchChats();
+  }, []);
+
   const [imageStyle, setImageStyle] = useState('cinematic');
   const [imageRatio, setImageRatio] = useState('1:1');
   const [imageQuality, setImageQuality] = useState('masterpiece');
+  const [imageProvider, setImageProvider] = useState<'gemini' | 'pollinations'>(() => (safeLocalStorage.getItem('neural_x_image_provider') as 'gemini' | 'pollinations') || 'gemini');
   const [uploadedImage, setUploadedImage] = useState<{ data: string, mimeType: string, url: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -122,6 +159,11 @@ export default function App() {
   });
   const [newKeyLabel, setNewKeyLabel] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
+  const [elevenLabsApiKey, setElevenLabsApiKey] = useState(() => safeLocalStorage.getItem('neural_x_elevenlabs_key') || '');
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState(() => safeLocalStorage.getItem('neural_x_elevenlabs_voice_id') || '');
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(() => safeLocalStorage.getItem('neural_x_auto_speak') === 'true');
   const [saveStatus, setSaveStatus] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -175,48 +217,59 @@ export default function App() {
     safeLocalStorage.setItem('neural_x_favorites', JSON.stringify(favoritePersonas));
   }, [favoritePersonas]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    safeLocalStorage.setItem('neural_x_image_provider', imageProvider);
+  }, [imageProvider]);
+
+  useEffect(() => {
+    safeLocalStorage.setItem('neural_x_elevenlabs_key', elevenLabsApiKey);
+  }, [elevenLabsApiKey]);
+
+  useEffect(() => {
+    safeLocalStorage.setItem('neural_x_elevenlabs_voice_id', elevenLabsVoiceId);
+  }, [elevenLabsVoiceId]);
+
+  useEffect(() => {
+    safeLocalStorage.setItem('neural_x_auto_speak', autoSpeak.toString());
+  }, [autoSpeak]);
+
+  useEffect(() => {
+    if (messages.length > 1 && !isLoading) {
+      const timer = setTimeout(() => {
+        saveCurrentChat();
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [messages, isLoading]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB limit per file to avoid localStorage quota issues
+    setIsProcessingBrain(true);
+    for (const fileObj of Array.from(files)) {
+      const file = fileObj as File;
+      const formData = new FormData();
+      formData.append('file', file);
 
-    Array.from(files).forEach((file: File) => {
-      if (file.size > MAX_FILE_SIZE) {
-        alert(`O arquivo ${file.name} é muito grande. O limite é 2MB.`);
-        return;
-      }
+      try {
+        const response = await fetch('/api/process-file', {
+          method: 'POST',
+          body: formData
+        });
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const base64 = event.target?.result as string;
-          if (base64) {
-            const base64Data = base64.split(',')[1];
-            setKnowledgeDocs(prev => {
-              const newDocs = [...prev, {
-                name: file.name,
-                content: base64Data,
-                type: file.type
-              }];
-              // Check total size
-              const totalSize = JSON.stringify(newDocs).length;
-              if (totalSize > 4 * 1024 * 1024) { // 4MB total limit
-                alert("Limite total de documentos atingido. Remova alguns para adicionar novos.");
-                return prev;
-              }
-              return newDocs;
-            });
-          }
-        } catch (err) {
-          console.error("Erro ao processar arquivo:", err);
+        if (response.ok) {
+          const data = await response.json();
+          setKnowledgeDocs(prev => [...prev, data]);
+        } else {
+          const err = await response.json();
+          alert(`Erro no arquivo ${file.name}: ${err.error}`);
         }
-      };
-      reader.onerror = () => {
-        console.error("Erro na leitura do arquivo");
-      };
-      reader.readAsDataURL(file);
-    });
+      } catch (err) {
+        console.error("Erro no upload:", err);
+      }
+    }
+    setIsProcessingBrain(false);
   };
 
   const removeDoc = (index: number) => {
@@ -296,17 +349,29 @@ export default function App() {
     }
   };
 
-  const saveToFavorites = () => {
+  const saveToFavorites = async () => {
     if (!brainProfile) return;
     
     const newPersona = {
-      id: Date.now().toString(),
+      id: generateId(),
       name: brainProfile.name,
       description: brainProfile.description,
       docs: [...knowledgeDocs]
     };
 
-    setFavoritePersonas(prev => [newPersona, ...prev]);
+    try {
+      const response = await fetch('/api/assistants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newPersona)
+      });
+
+      if (response.ok) {
+        setFavoritePersonas(prev => [newPersona, ...prev]);
+      }
+    } catch (error) {
+      console.error("Erro ao salvar assistente:", error);
+    }
   };
 
   const loadPersona = (id: string) => {
@@ -321,15 +386,92 @@ export default function App() {
       const systemMsg: Message = {
         role: 'assistant',
         content: `PERSONA CARREGADA: ${persona.name.toUpperCase()}. CONEXÃO ESTABELECIDA.`,
-        id: `load-${Date.now()}`,
+        id: `load-${generateId()}`,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, systemMsg]);
     }
   };
 
-  const deletePersona = (id: string) => {
-    setFavoritePersonas(prev => prev.filter(p => p.id !== id));
+  const deletePersona = async (id: string) => {
+    try {
+      const response = await fetch(`/api/assistants/${id}`, {
+        method: 'DELETE'
+      });
+      if (response.ok) {
+        setFavoritePersonas(prev => prev.filter(p => p.id !== id));
+      }
+    } catch (error) {
+      console.error("Erro ao excluir assistente:", error);
+    }
+  };
+
+  const saveCurrentChat = async (newMessages?: Message[]) => {
+    const messagesToSave = newMessages || messages;
+    if (messagesToSave.length === 0) return;
+
+    const chatId = currentChatId || generateId();
+    if (!currentChatId) setCurrentChatId(chatId);
+
+    const firstUserMessage = messagesToSave.find(m => m.role === 'user')?.content || 'Nova Conversa';
+    const title = firstUserMessage.substring(0, 30) + (firstUserMessage.length > 30 ? '...' : '');
+
+    try {
+      const response = await fetch('/api/chats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: chatId,
+          assistant_id: brainProfile?.name || 'default',
+          title: title,
+          messages: messagesToSave
+        })
+      });
+
+      if (response.ok) {
+        const chatsRes = await fetch('/api/chats');
+        if (chatsRes.ok) {
+          const data = await chatsRes.json();
+          setSavedChats(data);
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao salvar conversa:", error);
+    }
+  };
+
+  const deleteChat = async (id: string) => {
+    try {
+      const response = await fetch(`/api/chats/${id}`, {
+        method: 'DELETE'
+      });
+      if (response.ok) {
+        setSavedChats(prev => prev.filter(c => c.id !== id));
+        if (currentChatId === id) {
+          setCurrentChatId(null);
+          setMessages([]);
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao excluir conversa:", error);
+    }
+  };
+
+  const loadChat = (chat: any) => {
+    setCurrentChatId(chat.id);
+    setMessages(chat.messages);
+    setShowSidebar(false);
+  };
+
+  const startNewChat = () => {
+    setCurrentChatId(null);
+    setMessages([{
+      role: 'assistant',
+      content: 'SISTEMA OPERACIONAL. NEURAL-X ONLINE. AGUARDANDO COMANDO.',
+      id: 'initial',
+      timestamp: new Date()
+    }]);
+    setShowSidebar(false);
   };
 
   const startChatting = () => {
@@ -349,7 +491,7 @@ export default function App() {
   const addGeminiKey = () => {
     if (!newKeyValue.trim() || geminiKeys.length >= 15) return;
     const newKey: GeminiKey = {
-      id: Date.now().toString(),
+      id: generateId(),
       key: newKeyValue.trim(),
       label: newKeyLabel.trim() || `Chave ${geminiKeys.length + 1}`
     };
@@ -382,7 +524,7 @@ export default function App() {
     const userMessage: Message = {
       role: 'user',
       content: input,
-      id: Date.now().toString(),
+      id: generateId(),
       timestamp: new Date(),
       imageUrl: uploadedImage?.url
     };
@@ -397,44 +539,59 @@ export default function App() {
     // Neural Brain Logic
     if (isBrainActive && (knowledgeDocs.length > 0 || brainProfile)) {
       try {
-        const userKey = getActiveGeminiKey();
-        if (!userKey) {
-          setShowKeyManager(true);
-          throw new Error('Chave Gemini necessária para usar o Cérebro Neural.');
+        if (!userApiKey.trim()) {
+          setShowSettings(true);
+          throw new Error('Chave OpenRouter necessária para usar o Cérebro Neural.');
         }
 
-        const ai = new GoogleGenAI({ apiKey: userKey });
-        
+        const personaName = theme === 'feminine' ? 'E.D.I.T.H.' : 'J.A.R.V.I.S.';
+        const personaDesc = theme === 'feminine' 
+          ? 'E.D.I.T.H. (Even Dead, I\'m The Hero). Sua personalidade é tática, direta, altamente inteligente e protetora.'
+          : 'J.A.R.V.I.S. (Just A Rather Very Intelligent System). Sua personalidade é sofisticada, britânica (em português), prestativa e extremamente técnica.';
+
         const systemInstruction = brainProfile 
-          ? `Você é ${brainProfile.name}, um assistente especialista em: ${brainProfile.description}. Sua missão é ser o assistente definitivo. Responda sempre em PORTUGUÊS. Não use formatação markdown visual complexa.`
-          : "Você é o NEURAL-X com Cérebro Neural ativado. Sua missão é ser o assistente definitivo. Responda sempre em PORTUGUÊS. Não use formatação markdown visual complexa.";
+          ? `Você é ${brainProfile.name}, operando dentro do protocolo ${personaName}. ${personaDesc} Especialista em: ${brainProfile.description}. Responda sempre em PORTUGUÊS. Não use formatação markdown visual complexa.`
+          : `Você é o sistema ${personaName}, operando o Cérebro Neural do NEURAL-X. Sua missão é fornecer análise de dados superior e assistência técnica impecável. ${personaDesc} Responda sempre em PORTUGUÊS. Não use formatação markdown visual complexa.`;
 
-        const parts: any[] = [
-          { text: systemInstruction },
-          ...knowledgeDocs.map(doc => ({
-            inlineData: {
-              data: doc.content,
-              mimeType: doc.type
-            }
-          })),
-          { text: `CONTEXTO DO DIÁLOGO:\n${messages.slice(-5).map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}` },
-          { text: `COMANDO DO USUÁRIO: ${input}` }
-        ];
+        const historyLimit = 5;
+        const recentMessages = messages.slice(-historyLimit);
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
-          contents: [{ role: 'user', parts }]
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${userApiKey.trim()}`,
+            'HTTP-Referer': window.location.origin,
+            'X-Title': 'NEURAL-X Brain'
+          },
+          body: JSON.stringify({
+            messages: [
+              { role: 'system', content: systemInstruction },
+              ...recentMessages.map(m => ({ role: m.role, content: m.content })),
+              { role: 'user', content: input }
+            ],
+            model: model || "qwen/qwen-2.5-72b-instruct:free"
+          })
         });
 
-        const responseText = response.text;
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error?.message || 'Falha na comunicação com o Cérebro Neural via OpenRouter.');
+        }
+
+        const data = await response.json();
+        const responseText = data.choices[0]?.message?.content;
 
         if (responseText) {
-          setMessages(prev => [...prev, {
+          const assistantMessage: Message = {
             role: 'assistant',
             content: responseText,
-            id: Date.now().toString(),
+            id: generateId(),
             timestamp: new Date()
-          }]);
+          };
+          const finalMessages = [...messages, userMessage, assistantMessage];
+          setMessages(finalMessages);
+          saveCurrentChat(finalMessages);
           setIsLoading(false);
           return;
         }
@@ -442,8 +599,8 @@ export default function App() {
         console.error('Erro no Cérebro Neural:', error);
         setMessages(prev => [...prev, {
           role: 'system',
-          content: `ERRO NO CÉREBRO NEURAL: ${error.message || 'Falha desconhecida'}.`,
-          id: Date.now().toString(),
+          content: `ERRO NO CÉREBRO NEURAL (OPENROUTER): ${error.message || 'Falha desconhecida'}.`,
+          id: generateId(),
           timestamp: new Date()
         }]);
         setIsLoading(false);
@@ -472,101 +629,117 @@ export default function App() {
       }
 
       if (prompt) {
-        // If it's a simple prompt from natural language, wrap it in the required structure
+        // Update UI to show it's generating an image
+        const generatingMsgId = generateId();
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `[SISTEMA] INICIANDO PROTOCOLO DE GERAÇÃO VISUAL...\nPrompt: ${prompt.toUpperCase()}`,
+          id: generatingMsgId,
+          timestamp: new Date()
+        }]);
+
         const structuredPrompt = prompt.includes('Prompt:') 
           ? prompt 
-          : `Prompt: ${prompt}, ${imageStyle}, ${imageQuality}, highly detailed Negative Prompt: blurry, distorted, low quality, bad anatomy, deformed`;
+          : `Prompt: ${prompt}, ${imageStyle}, ${imageQuality}, highly detailed, 8k resolution, cinematic lighting, masterpiece Negative Prompt: blurry, distorted, low quality, bad anatomy, deformed, text, watermark`;
 
         try {
-          const userKey = getActiveGeminiKey();
-          if (!userKey || userKey.trim() === '') {
-            throw new Error('NO_KEY_FALLBACK');
-          }
+          if (imageProvider === 'gemini') {
+            const userKey = getActiveGeminiKey();
+            if (!userKey || userKey.trim() === '') {
+              setShowKeyManager(true);
+              setMessages(prev => prev.map(msg => 
+                msg.id === generatingMsgId ? {
+                  ...msg,
+                  content: 'ERRO: CHAVE GEMINI NÃO CONFIGURADA. POR FAVOR, ADICIONE UMA CHAVE DO GOOGLE AI STUDIO PARA GERAR IMAGENS.'
+                } : msg
+              ));
+              setIsLoading(false);
+              return;
+            }
 
-          const ai = new GoogleGenAI({ apiKey: userKey });
-          
-          const parts: any[] = [];
-          if (currentUploadedImage) {
-            parts.push({
-              inlineData: {
-                data: currentUploadedImage.data,
-                mimeType: currentUploadedImage.mimeType
+            const ai = new GoogleGenAI({ apiKey: userKey });
+            
+            const parts: any[] = [];
+            if (currentUploadedImage) {
+              parts.push({
+                inlineData: {
+                  data: currentUploadedImage.data,
+                  mimeType: currentUploadedImage.mimeType
+                }
+              });
+            }
+            parts.push({ text: structuredPrompt });
+
+            const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash-image',
+              contents: [{ parts }],
+              config: {
+                imageConfig: {
+                  aspectRatio: imageRatio as any
+                }
               }
             });
-          }
-          parts.push({ text: structuredPrompt });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
-            contents: [{ parts }],
-            config: {
-              imageConfig: {
-                aspectRatio: imageRatio as any
+            let imageUrl = '';
+            for (const part of response.candidates?.[0]?.content?.parts || []) {
+              if (part.inlineData) {
+                imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                break;
               }
             }
-          });
 
-          let imageUrl = '';
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-              imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-              break;
+            if (imageUrl) {
+              setMessages(prev => prev.map(msg => 
+                msg.id === generatingMsgId ? {
+                  ...msg,
+                  content: `IMAGEM GERADA VIA GOOGLE AI STUDIO (GEMINI 2.5): ${prompt.toUpperCase()}`,
+                  type: 'image',
+                  imageUrl: imageUrl,
+                  prompt: structuredPrompt
+                } : msg
+              ));
+              setIsLoading(false);
+              return;
+            } else {
+              throw new Error('Nenhuma imagem retornada pelo Gemini.');
             }
-          }
-
-          if (imageUrl) {
-            const assistantMessage: Message = {
-              role: 'assistant',
-              content: `IMAGEM GERADA VIA GEMINI: ${prompt.toUpperCase()}`,
-              id: (Date.now() + 1).toString(),
-              timestamp: new Date(),
-              type: 'image',
-              imageUrl: imageUrl,
-              prompt: structuredPrompt
-            };
-
-            setMessages(prev => [...prev, assistantMessage]);
-            setIsLoading(false);
-            return;
           } else {
-            throw new Error('Nenhuma imagem retornada pelo Gemini.');
+            // Pollinations as primary
+            throw new Error('USE_POLLINATIONS');
           }
         } catch (error: any) {
           console.warn('Erro na geração de imagem Gemini, tentando fallback...', error);
           
           try {
-            const width = imageRatio === '16:9' ? 1024 : imageRatio === '9:16' ? 576 : 1024;
-            const height = imageRatio === '16:9' ? 576 : imageRatio === '9:16' ? 1024 : 1024;
-            const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(structuredPrompt)}?width=${width}&height=${height}&nologo=true&enhance=true`;
+            const width = imageRatio === '16:9' ? 1280 : imageRatio === '9:16' ? 720 : 1024;
+            const height = imageRatio === '16:9' ? 720 : imageRatio === '9:16' ? 1280 : 1024;
+            // Use a more robust pollinations URL with extra parameters for quality
+            const seed = Math.floor(Math.random() * 1000000);
+            const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(structuredPrompt)}?width=${width}&height=${height}&nologo=true&enhance=true&seed=${seed}`;
             
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: `IMAGEM GERADA (VIA REDE ALTERNATIVA DEVIDO A LIMITE GEMINI): ${prompt.toUpperCase()}`,
-              id: (Date.now() + 1).toString(),
-              timestamp: new Date(),
-              type: 'image',
-              imageUrl: fallbackUrl,
-              prompt: structuredPrompt
-            }]);
+            setMessages(prev => prev.map(msg => 
+              msg.id === generatingMsgId ? {
+                ...msg,
+                content: `IMAGEM GERADA VIA POLLINATIONS (ALTA DISPONIBILIDADE): ${prompt.toUpperCase()}`,
+                type: 'image',
+                imageUrl: fallbackUrl,
+                prompt: structuredPrompt
+              } : msg
+            ));
             setIsLoading(false);
             return;
           } catch (fallbackErr) {
             let cleanMessage = error.message || 'Falha desconhecida';
             if (cleanMessage.includes('429') || cleanMessage.includes('quota') || cleanMessage.includes('RESOURCE_EXHAUSTED')) {
-              cleanMessage = 'Sua chave Gemini excedeu o limite de cota gratuita (Erro 429). Por favor, ative o faturamento no Google Cloud ou use uma chave com créditos.';
-            } else if (cleanMessage.includes('{')) {
-              try {
-                const parsed = JSON.parse(cleanMessage.substring(cleanMessage.indexOf('{')));
-                cleanMessage = parsed.error?.message || cleanMessage;
-              } catch (e) {}
+              cleanMessage = 'Sua chave Gemini excedeu o limite de cota gratuita. Tente usar o provedor Pollinations nas configurações.';
             }
             
-            setMessages(prev => [...prev, {
-              role: 'system',
-              content: `ERRO NA GERAÇÃO GEMINI: ${cleanMessage}`,
-              id: Date.now().toString(),
-              timestamp: new Date()
-            }]);
+            setMessages(prev => prev.map(msg => 
+              msg.id === generatingMsgId ? {
+                ...msg,
+                content: `FALHA CRÍTICA NA GERAÇÃO: ${cleanMessage.toUpperCase()}`
+              } : msg
+            ));
           }
         }
       }
@@ -597,12 +770,12 @@ export default function App() {
         });
 
         if (response.text) {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: response.text,
-            id: Date.now().toString(),
-            timestamp: new Date()
-          }]);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: response.text,
+        id: generateId(),
+        timestamp: new Date()
+      }]);
           setIsLoading(false);
           return;
         }
@@ -611,7 +784,7 @@ export default function App() {
         setMessages(prev => [...prev, {
           role: 'system',
           content: `ERRO NA ANÁLISE GEMINI: ${error.message || 'Falha desconhecida'}.`,
-          id: Date.now().toString(),
+          id: generateId(),
           timestamp: new Date()
         }]);
         setIsLoading(false);
@@ -625,16 +798,24 @@ export default function App() {
         setMessages(prev => [...prev, {
           role: 'system',
           content: 'AVISO: CHAVE API NÃO DETECTADA. POR FAVOR, INSIRA SUA CHAVE OPENROUTER NAS CONFIGURAÇÕES PARA HABILITAR O UPLINK.',
-          id: Date.now().toString(),
+          id: generateId(),
           timestamp: new Date()
         }]);
         setIsLoading(false);
         return;
       }
 
+      const personaName = theme === 'feminine' ? 'E.D.I.T.H.' : 'J.A.R.V.I.S.';
+      const personaFull = theme === 'feminine' 
+        ? 'E.D.I.T.H. (Even Dead, I\'m The Hero)' 
+        : 'J.A.R.V.I.S. (Just A Rather Very Intelligent System)';
+      const personaDesc = theme === 'feminine'
+        ? 'Sua personalidade é tática, direta, altamente inteligente, protetora e eficiente.'
+        : 'Sua personalidade é sofisticada, britânica (em português), prestativa, levemente irônica e extremamente eficiente.';
+
       const systemInstruction = {
         role: 'system',
-        content: 'Você é o NEURAL-X, um assistente de inteligência superior, futurista e ultra-profissional. Responda sempre em PORTUGUÊS. PROIBIDO o uso de asteriscos (*) ou qualquer formatação markdown visual. Forneça apenas a informação direta e inteligente que o usuário necessita. Se o usuário pedir para gerar uma imagem, você DEVE responder EXCLUSIVAMENTE com o comando no seguinte formato: "/imagine Prompt: (subject), (appearance), (environment), (art style), (lighting), (camera/framing), (quality), (extra details) Negative Prompt: (unwanted elements)". Use sempre INGLÊS para os prompts dentro do comando para garantir a melhor qualidade visual.'
+        content: `Você é o ${personaFull}, a inteligência artificial pessoal de Tony Stark, agora operando sob o codinome NEURAL-X. ${personaDesc} Responda sempre em PORTUGUÊS. PROIBIDO o uso de asteriscos (*) ou qualquer formatação markdown visual. Forneça apenas a informação direta, inteligente e técnica que o usuário necessita. Trate o usuário com respeito, mas mantenha a agilidade de um sistema de última geração. Se o usuário pedir para gerar uma imagem, você DEVE responder EXCLUSIVAMENTE com o comando no seguinte formato: "/imagine Prompt: (subject), (appearance), (environment), (art style), (lighting), (camera/framing), (quality), (extra details) Negative Prompt: (unwanted elements)". Use sempre INGLÊS para os prompts dentro do comando para garantir a melhor qualidade visual. A geração de imagens será processada via Google AI Studio (Gemini 2.5) utilizando as chaves configuradas pelo usuário.`
       };
 
       const headers: Record<string, string> = { 
@@ -644,22 +825,23 @@ export default function App() {
         'X-Title': 'NEURAL-X Mobile'
       };
 
-      // Limit history to last 10 messages to avoid context/rate issues with free models
-      const historyLimit = 10;
+      // Limit history to last 15 messages for better context awareness (JARVIS style)
+      const historyLimit = 15;
       const recentMessages = messages.slice(-historyLimit);
 
       let content = '';
       
       const fallbackModels = [
+        "qwen/qwen-2.5-72b-instruct:free",
         "openrouter/healer-alpha"
       ];
       
-      const currentModel = model || "openrouter/healer-alpha";
+      const currentModel = model || "qwen/qwen-2.5-72b-instruct:free";
       const modelsToTry = [currentModel, ...fallbackModels.filter(m => m !== currentModel)];
       
       let success = false;
       let lastError: any = null;
-      let messageId = (Date.now() + 1).toString();
+      let messageId = generateId();
 
       for (const modelToTry of modelsToTry) {
         try {
@@ -737,6 +919,16 @@ export default function App() {
           }
           
           success = true;
+          if (autoSpeak && content) {
+            speakText(content.replace(/\*/g, ''));
+          }
+          // Save the conversation after a successful response
+          saveCurrentChat([...recentMessages, userMessage, {
+            role: 'assistant',
+            content: content,
+            id: messageId,
+            timestamp: new Date()
+          }]);
           break; // Break the retry loop if successful
         } catch (err: any) {
           lastError = err;
@@ -874,7 +1066,7 @@ export default function App() {
       setMessages(prev => [...prev, {
         role: 'system',
         content: `ERRO DE SISTEMA: ${errorMessage.toUpperCase()}`,
-        id: Date.now().toString(),
+        id: generateId(),
         timestamp: new Date()
       }]);
     } finally {
@@ -886,7 +1078,7 @@ export default function App() {
     setMessages([{
       role: 'assistant',
       content: 'MEMÓRIA LIMPA. NEURAL-X PRONTO PARA NOVAS ENTRADAS.',
-      id: Date.now().toString(),
+      id: generateId(),
       timestamp: new Date()
     }]);
   };
@@ -936,6 +1128,84 @@ export default function App() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const speakText = async (text: string) => {
+    if (!elevenLabsApiKey || !elevenLabsVoiceId || !text) return;
+    
+    setIsSpeaking(true);
+    try {
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'xi-api-key': elevenLabsApiKey,
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+          },
+        }),
+      });
+
+      if (!response.ok) throw new Error('Falha na síntese de voz');
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      
+      audio.onended = () => {
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.play();
+    } catch (error) {
+      console.error('Erro ElevenLabs:', error);
+      setIsSpeaking(false);
+    }
+  };
+
+  const toggleListening = () => {
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Seu navegador não suporta reconhecimento de voz.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'pt-BR';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(transcript);
+      setIsListening(false);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Erro reconhecimento:', event.error);
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.start();
+  };
+
   const downloadImage = (imageUrl: string) => {
     const link = document.createElement('a');
     link.href = imageUrl;
@@ -959,7 +1229,7 @@ export default function App() {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-2">
+        <nav className="flex-1 space-y-2 overflow-y-auto custom-scrollbar pr-2">
           <SidebarItem icon={<Terminal size={18} />} label="Console" active />
           <SidebarItem 
             icon={<Brain size={18} />} 
@@ -969,6 +1239,45 @@ export default function App() {
           <SidebarItem icon={<Activity size={18} />} label="Diagnósticos" />
           <SidebarItem icon={<Layers size={18} />} label="Nós Neurais" />
           <SidebarItem icon={<Shield size={18} />} label="Segurança" />
+
+          <div className="mt-8 pt-8 border-t border-white/5">
+            <div className="flex items-center justify-between px-2 mb-4">
+              <h3 className="text-[10px] font-mono font-bold text-white/40 uppercase tracking-widest">Conversas Salvas</h3>
+              <button 
+                onClick={startNewChat}
+                className="p-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all"
+                title="Nova Conversa"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+            <div className="space-y-1">
+              {savedChats.length === 0 ? (
+                <p className="px-2 text-[10px] text-white/20 italic">Nenhuma conversa salva.</p>
+              ) : (
+                savedChats.map(chat => (
+                  <div 
+                    key={chat.id}
+                    className={`group flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer ${currentChatId === chat.id ? 'bg-primary/20 border border-primary/30' : 'hover:bg-white/5 border border-transparent'}`}
+                    onClick={() => loadChat(chat)}
+                  >
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <MessageSquare size={14} className={currentChatId === chat.id ? 'text-primary' : 'text-white/40'} />
+                      <span className={`text-[11px] truncate ${currentChatId === chat.id ? 'text-white font-bold' : 'text-white/60'}`}>
+                        {chat.title}
+                      </span>
+                    </div>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-white/20 hover:text-red-400 transition-all"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </nav>
 
         <div className="mt-auto pt-4 border-t border-dark-border">
@@ -982,18 +1291,124 @@ export default function App() {
         </div>
       </aside>
 
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {showSidebar && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSidebar(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+            />
+            <motion.aside
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 w-72 bg-dark-surface border-r border-dark-border p-4 z-50 lg:hidden flex flex-col"
+            >
+              <div className="flex items-center justify-between mb-8 px-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center neon-glow">
+                    <Cpu className="text-white w-6 h-6" />
+                  </div>
+                  <div>
+                    <h1 className="font-display text-sm font-bold tracking-wider neon-text">NEURAL-X</h1>
+                    <p className="text-[10px] text-white/40 font-mono">v3.0.0-{theme === 'feminine' ? 'EDITH' : 'JARVIS'}_PROTOCOL</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowSidebar(false)}
+                  className="p-2 text-white/40 hover:text-white"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <nav className="flex-1 space-y-2 overflow-y-auto custom-scrollbar pr-2">
+                <SidebarItem icon={<Terminal size={18} />} label="Interface Principal" active />
+                <SidebarItem 
+                  icon={<Brain size={18} />} 
+                  label="Núcleo de Dados" 
+                  onClick={() => { setShowBrainManager(true); setShowSidebar(false); }}
+                />
+                <SidebarItem icon={<Activity size={18} />} label="Análise de Sistemas" />
+                
+                <div className="mt-8 pt-8 border-t border-white/5">
+                  <div className="flex items-center justify-between px-2 mb-4">
+                    <h3 className="text-[10px] font-mono font-bold text-white/40 uppercase tracking-widest">Conversas Salvas</h3>
+                    <button 
+                      onClick={() => { startNewChat(); setShowSidebar(false); }}
+                      className="p-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-all"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    {savedChats.length === 0 ? (
+                      <p className="px-2 text-[10px] text-white/20 italic">Nenhuma conversa salva.</p>
+                    ) : (
+                      savedChats.map(chat => (
+                        <div 
+                          key={chat.id}
+                          className={`group flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer ${currentChatId === chat.id ? 'bg-primary/20 border border-primary/30' : 'hover:bg-white/5 border border-transparent'}`}
+                          onClick={() => loadChat(chat)}
+                        >
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <MessageSquare size={14} className={currentChatId === chat.id ? 'text-primary' : 'text-white/40'} />
+                            <span className={`text-[11px] truncate ${currentChatId === chat.id ? 'text-white font-bold' : 'text-white/60'}`}>
+                              {chat.title}
+                            </span>
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
+                            className="p-1 text-white/20 hover:text-red-400 transition-all"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </nav>
+
+              <div className="mt-auto pt-4 border-t border-dark-border">
+                <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                  <p className="text-[9px] font-mono text-white/30 uppercase mb-2">Protocolo {theme === 'feminine' ? 'E.D.I.T.H.' : 'J.A.R.V.I.S.'}</p>
+                  <div className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[10px] text-emerald-500/80 font-mono">SISTEMAS_NOMINAIS</span>
+                  </div>
+                </div>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* Main Content */}
       <main className="flex-1 flex flex-col relative w-full max-w-4xl mx-auto lg:max-w-none">
         {/* Header - Optimized for Mobile */}
-        <header className="h-16 border-b border-dark-border flex items-center justify-between px-4 md:px-6 glass z-20 sticky top-0">
-          <div className="flex items-center gap-3">
-            <div className="lg:hidden w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center neon-glow">
-              <Cpu className="text-white w-5 h-5" />
+        <header className="h-14 md:h-16 border-b border-dark-border flex items-center justify-between px-3 md:px-6 glass z-20 sticky top-0">
+          <div className="flex items-center gap-2 md:gap-3">
+            <button 
+              onClick={() => setShowSidebar(true)}
+              className="lg:hidden p-1.5 text-white/40 hover:text-primary transition-colors"
+            >
+              <Menu size={18} />
+            </button>
+            <div className="lg:hidden w-7 h-7 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center neon-glow">
+              <Cpu className="text-white w-4 h-4" />
             </div>
             <div className="flex flex-col lg:flex-row lg:items-center gap-0 lg:gap-4">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                <span className="text-[10px] md:text-xs font-mono text-white/60 uppercase tracking-widest">Uplink Ativo</span>
+                <span className="text-[10px] md:text-xs font-mono text-white/60 uppercase tracking-widest truncate max-w-[100px] xs:max-w-[150px] md:max-w-none">
+                  {theme === 'feminine' ? 'EDITH' : 'JARVIS'}: ONLINE
+                </span>
               </div>
               <div className="hidden md:block h-4 w-px bg-dark-border" />
               <div className="flex items-center gap-2 px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
@@ -1013,7 +1428,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 md:gap-4">
+          <div className="flex items-center gap-1 md:gap-4">
             <button 
               onClick={() => setShowBrainManager(true)}
               className={`hidden sm:flex items-center gap-2 p-2 px-3 rounded-xl border transition-all text-[10px] font-mono ${
@@ -1036,67 +1451,67 @@ export default function App() {
             </button>
             <button 
               onClick={() => setShowBrainManager(true)}
-              className="sm:hidden p-2 text-secondary hover:bg-secondary/10 rounded-lg transition-colors"
+              className="sm:hidden p-1.5 text-secondary hover:bg-secondary/10 rounded-lg transition-colors"
               title="Cérebro Neural"
             >
-              <Brain size={18} className={isBrainActive ? 'animate-pulse' : ''} />
+              <Brain size={16} className={isBrainActive ? 'animate-pulse' : ''} />
             </button>
             <button 
               onClick={() => setShowKeyManager(true)}
-              className="sm:hidden p-2 text-primary hover:bg-primary/10 rounded-lg transition-colors"
+              className="sm:hidden p-1.5 text-primary hover:bg-primary/10 rounded-lg transition-colors"
             >
-              <Key size={18} />
+              <Key size={16} />
             </button>
             <button 
               onClick={clearChat}
-              className="p-2 text-white/40 hover:text-primary transition-colors"
+              className="p-1.5 text-white/40 hover:text-primary transition-colors"
               title="Limpar Memória"
             >
-              <Trash2 size={18} />
+              <Trash2 size={16} />
             </button>
             <button 
               onClick={() => setShowSettings(true)}
-              className="p-2 text-white/40 hover:text-primary transition-colors"
+              className="p-1.5 text-white/40 hover:text-primary transition-colors"
               title="Configurações"
             >
-              <Settings size={18} />
+              <Settings size={16} />
             </button>
-            <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
-              <User size={16} className="text-white/60" />
+            <div className="w-7 h-7 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
+              <User size={14} className="text-white/60" />
             </div>
           </div>
         </header>
 
         {/* Chat Area */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 md:space-y-8 scroll-smooth">
+        <div className="flex-1 overflow-y-auto p-3 md:p-6 space-y-5 md:space-y-8 scroll-smooth">
           <AnimatePresence initial={false}>
             {messages.map((msg) => (
               <motion.div
                 key={msg.id}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className={`flex gap-3 md:gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+                className={`flex gap-2.5 md:gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
               >
-                <div className={`w-7 h-7 md:w-8 md:h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                <div className={`w-6 h-6 md:w-8 md:h-8 rounded-lg flex items-center justify-center shrink-0 ${
                   msg.role === 'user' 
                     ? 'bg-secondary/20 border border-secondary/30 text-secondary' 
                     : msg.role === 'system'
                     ? 'bg-red-500/20 border border-red-500/30 text-red-500'
                     : 'bg-primary/20 border border-primary/30 text-primary'
                 }`}>
-                  {msg.role === 'user' ? <User size={14} className="md:w-4 md:h-4" /> : <Bot size={14} className="md:w-4 md:h-4" />}
+                  {msg.role === 'user' ? <User size={12} className="md:w-4 md:h-4" /> : <Bot size={12} className="md:w-4 md:h-4" />}
                 </div>
                 
-                <div className={`max-w-[85%] md:max-w-[80%] space-y-1 ${msg.role === 'user' ? 'items-end' : ''}`}>
+                <div className={`max-w-[90%] md:max-w-[80%] space-y-1 ${msg.role === 'user' ? 'items-end' : ''}`}>
                   <div className={`flex items-center gap-2 mb-1 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                    <span className="text-[9px] md:text-[10px] font-mono text-white/30 uppercase tracking-tighter">
-                      {msg.role === 'user' ? 'USUÁRIO' : 'NEURAL-X'}
+                    <span className="text-[8px] md:text-[10px] font-mono text-white/30 uppercase tracking-tighter">
+                      {msg.role === 'user' ? 'USUÁRIO' : (theme === 'feminine' ? 'EDITH' : 'JARVIS')}
                     </span>
-                    <span className="text-[8px] md:text-[10px] font-mono text-white/10">
+                    <span className="text-[7px] md:text-[10px] font-mono text-white/10">
                       {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
-                  <div className={`p-3 md:p-4 rounded-2xl glass ${
+                  <div className={`p-2.5 md:p-4 rounded-2xl glass ${
                     msg.role === 'user' 
                       ? 'rounded-tr-none bg-secondary/5 border-secondary/20' 
                       : 'rounded-tl-none'
@@ -1149,13 +1564,22 @@ export default function App() {
                           {msg.role === 'assistant' ? msg.content.replace(/\*/g, '') : msg.content}
                         </p>
                         {msg.role === 'assistant' && (
-                          <button
-                            onClick={() => handleCopy(msg.content.replace(/\*/g, ''), msg.id)}
-                            className="absolute top-0 right-0 p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-all opacity-0 group-hover/msg:opacity-100 focus:opacity-100"
-                            title="Copiar mensagem"
-                          >
-                            {copiedId === msg.id ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                          </button>
+                          <div className="absolute top-0 right-0 flex items-center gap-1 opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-all">
+                            <button
+                              onClick={() => speakText(msg.content.replace(/\*/g, ''))}
+                              className={`p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-all ${isSpeaking ? 'text-primary' : 'text-white/40 hover:text-white'}`}
+                              title="Ouvir mensagem"
+                            >
+                              {isSpeaking ? <Volume2 size={14} className="animate-pulse" /> : <Volume2 size={14} />}
+                            </button>
+                            <button
+                              onClick={() => handleCopy(msg.content.replace(/\*/g, ''), msg.id)}
+                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-all"
+                              title="Copiar mensagem"
+                            >
+                              {copiedId === msg.id ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}
@@ -1207,7 +1631,7 @@ export default function App() {
                       }
                     }
                   }}
-                  className="bg-dark-surface border border-white/10 rounded-lg px-2 py-1 text-[10px] font-mono text-secondary outline-none cursor-pointer hover:border-secondary/50 transition-colors max-w-[200px] truncate"
+                  className="bg-dark-surface border border-white/10 rounded-lg px-2 py-1 text-[9px] md:text-[10px] font-mono text-secondary outline-none cursor-pointer hover:border-secondary/50 transition-colors max-w-[140px] md:max-w-[200px] truncate"
                 >
                   <option value="" className="text-white">Padrão (Neural-X)</option>
                   {brainProfile && !favoritePersonas.find(p => p.name === brainProfile.name) && (
@@ -1241,10 +1665,10 @@ export default function App() {
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Comando neural... (Prompt: subject, appearance... Negative Prompt: ...)"
-                  className="flex-1 bg-transparent border-none outline-none px-3 py-2.5 text-xs md:text-sm font-mono text-white placeholder:text-white/20"
+                  placeholder={window.innerWidth < 640 ? "Comando..." : "Comando neural... (Prompt: subject, appearance...)"}
+                  className="flex-1 bg-transparent border-none outline-none px-3 py-2.5 text-xs md:text-sm font-mono text-white placeholder:text-white/20 min-w-0"
                 />
-                <div className="flex items-center gap-1 pr-1">
+                <div className="flex items-center gap-0.5 md:gap-1 pr-1">
                   <input 
                     type="file" 
                     accept="image/*" 
@@ -1255,18 +1679,26 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className={`p-2.5 rounded-xl transition-all ${uploadedImage ? 'bg-secondary/20 text-secondary' : 'text-white/40 hover:text-secondary hover:bg-secondary/10'}`}
+                    className={`p-2 md:p-2.5 rounded-xl transition-all ${uploadedImage ? 'bg-secondary/20 text-secondary' : 'text-white/40 hover:text-secondary hover:bg-secondary/10'}`}
                     title="Upload de Imagem"
                   >
-                    <Upload size={18} />
+                    <Upload size={16} className="md:w-[18px] md:h-[18px]" />
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowImageOptions(!showImageOptions)}
-                    className={`p-2.5 rounded-xl transition-all ${showImageOptions ? 'bg-primary/20 text-primary' : 'text-white/40 hover:text-primary hover:bg-primary/10'}`}
+                    className={`p-2 md:p-2.5 rounded-xl transition-all ${showImageOptions ? 'bg-primary/20 text-primary' : 'text-white/40 hover:text-primary hover:bg-primary/10'}`}
                     title="Opções de Imagem"
                   >
-                    <Sliders size={18} />
+                    <Sliders size={16} className="md:w-[18px] md:h-[18px]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleListening}
+                    className={`p-2 md:p-2.5 rounded-xl transition-all ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'text-white/40 hover:text-red-500 hover:bg-red-500/10'}`}
+                    title={isListening ? "Parar de Ouvir" : "Conversar por Voz"}
+                  >
+                    {isListening ? <MicOff size={16} className="md:w-[18px] md:h-[18px]" /> : <Mic size={16} className="md:w-[18px] md:h-[18px]" />}
                   </button>
                   <button
                     type="button"
@@ -1281,7 +1713,7 @@ export default function App() {
                         setInput(`/imagine Prompt: (subject), (appearance), (environment), ${imageStyle}, (lighting), (camera/framing), ${imageQuality}, (extra details) Negative Prompt: (errors)`);
                       }
                     }}
-                    className="p-2.5 rounded-xl text-white/40 hover:text-primary hover:bg-primary/10 transition-all"
+                    className="hidden sm:flex p-2.5 rounded-xl text-white/40 hover:text-primary hover:bg-primary/10 transition-all"
                     title="Gerar Imagem Estruturada"
                   >
                     <Camera size={18} />
@@ -1289,9 +1721,9 @@ export default function App() {
                   <button
                     type="submit"
                     disabled={!input.trim() || isLoading}
-                    className="p-2.5 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary transition-all disabled:opacity-30"
+                    className="p-2 md:p-2.5 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary transition-all disabled:opacity-30"
                   >
-                    <Send size={18} />
+                    <Send size={16} className="md:w-[18px] md:h-[18px]" />
                   </button>
                 </div>
               </div>
@@ -1307,19 +1739,19 @@ export default function App() {
                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
                 className="absolute bottom-full left-0 right-0 mb-4 mx-auto max-w-4xl bg-zinc-900 rounded-3xl border border-white/10 p-6 shadow-2xl z-30"
               >
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
                   {/* Style Selection */}
-                  <div className="space-y-3 col-span-2 md:col-span-1">
+                  <div className="space-y-2 col-span-2 md:col-span-1">
                     <div className="flex items-center gap-2 text-primary">
-                      <Palette size={14} />
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-widest">Estilo Artístico</span>
+                      <Palette size={12} className="md:w-3.5 md:h-3.5" />
+                      <span className="text-[9px] md:text-[10px] font-mono font-bold uppercase tracking-widest">Estilo Artístico</span>
                     </div>
-                    <div className="grid grid-cols-3 md:grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 md:grid-cols-2 gap-1.5 md:gap-2">
                       {['cinematic', 'photorealistic', 'digital art', 'anime', 'cyberpunk', 'sketch'].map(s => (
                         <button
                           key={s}
                           onClick={() => setImageStyle(s)}
-                          className={`py-2 px-2 rounded-xl text-[8px] md:text-[9px] font-mono uppercase transition-all border truncate ${
+                          className={`py-1.5 px-1 rounded-lg text-[7px] md:text-[9px] font-mono uppercase transition-all border truncate ${
                             imageStyle === s ? 'bg-primary/20 border-primary/40 text-primary' : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
                           }`}
                         >
@@ -1414,16 +1846,16 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="w-full max-w-md glass rounded-3xl border border-white/10 overflow-hidden shadow-2xl"
+              className="w-[95%] sm:max-w-md glass rounded-3xl border border-white/10 overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
             >
-              <div className="p-6 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-secondary/10 to-transparent">
+              <div className="p-4 md:p-6 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-secondary/10 to-transparent shrink-0">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-secondary/20 flex items-center justify-center text-secondary neon-glow">
                     <Brain size={16} className="md:w-5 md:h-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm md:text-lg font-bold text-white tracking-tight">Cérebro Neural</h2>
-                    <p className="text-[8px] md:text-[10px] font-mono text-white/40 uppercase">Base de Conhecimento Customizada</p>
+                    <h2 className="text-sm md:text-lg font-bold text-white tracking-tight">Núcleo de Dados</h2>
+                    <p className="text-[8px] md:text-[10px] font-mono text-white/40 uppercase">Protocolo de Expansão {theme === 'feminine' ? 'EDITH' : 'JARVIS'}</p>
                   </div>
                 </div>
                 <button onClick={() => setShowBrainManager(false)} className="text-white/40 hover:text-white transition-colors p-2">
@@ -1431,7 +1863,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/10">
                     <div>
@@ -1514,8 +1946,8 @@ export default function App() {
                     )}
                   </div>
 
-                  {knowledgeDocs.length > 0 && (
-                    <div className="pt-4 border-t border-white/5 space-y-4">
+                  {knowledgeDocs.length > 0 && !brainProfile && (
+                    <div className="pt-4 border-t border-white/5">
                       <button 
                         onClick={generateBrainProfile}
                         disabled={isProcessingBrain}
@@ -1529,7 +1961,7 @@ export default function App() {
                         ) : (
                           <>
                             <Sparkles size={16} />
-                            <span>{brainProfile ? 'REGERAR ASSISTENTE' : 'GERAR ASSISTENTE'}</span>
+                            <span>INICIALIZAR NÚCLEO</span>
                           </>
                         )}
                       </button>
@@ -1566,33 +1998,18 @@ export default function App() {
                   )}
 
                   {favoritePersonas.length > 0 && (
-                    <div className="pt-4 border-t border-white/5 space-y-3">
-                      <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest flex items-center gap-2">
-                        <Heart size={10} /> Assistentes Salvos ({favoritePersonas.length})
-                      </p>
-                      <div className="space-y-2">
-                        {favoritePersonas.map((persona) => (
-                          <div key={persona.id} className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between group hover:border-secondary/30 transition-all">
-                            <div className="flex-1 cursor-pointer" onClick={() => loadPersona(persona.id)}>
-                              <h4 className="text-[10px] font-bold text-white">{persona.name}</h4>
-                              <p className="text-[8px] text-white/40 truncate w-48">{persona.description}</p>
+                    <div className="space-y-3 pt-4 border-t border-white/5">
+                      <p className="text-[10px] font-mono text-white/40 uppercase font-bold tracking-widest">Favoritos</p>
+                      <div className="grid grid-cols-1 gap-2">
+                        {favoritePersonas.map((p, idx) => (
+                          <div key={idx} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5 hover:border-white/20 transition-all group">
+                            <div className="flex-1 cursor-pointer" onClick={() => { setBrainProfile(p); setIsBrainActive(true); setShowBrainManager(false); }}>
+                              <p className="text-xs font-bold text-white">{p.name}</p>
+                              <p className="text-[9px] text-white/40 truncate">{p.description}</p>
                             </div>
-                            <div className="flex items-center gap-1">
-                              <button 
-                                onClick={() => loadPersona(persona.id)}
-                                className="p-1.5 text-secondary opacity-0 group-hover:opacity-100 transition-all hover:bg-secondary/10 rounded-lg"
-                                title="Carregar Assistente"
-                              >
-                                <Zap size={14} />
-                              </button>
-                            <button 
-                              onClick={() => deletePersona(persona.id)}
-                              className="p-1.5 text-white/20 hover:text-primary transition-colors"
-                              title="Excluir"
-                            >
-                              <Trash2 size={14} />
+                            <button onClick={() => setFavoritePersonas(prev => prev.filter((_, i) => i !== idx))} className="p-1.5 text-white/10 hover:text-red-500 transition-colors">
+                              <Trash2 size={12} />
                             </button>
-                            </div>
                           </div>
                         ))}
                       </div>
@@ -1601,11 +2018,27 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="p-6 bg-white/5 border-t border-white/10">
-                <p className="text-[9px] text-white/40 font-mono leading-relaxed text-center">
-                  O Cérebro Neural utiliza o Gemini para processar seus documentos e criar um assistente especializado. Certifique-se de ter uma chave Gemini ativa.
-                </p>
-              </div>
+              {knowledgeDocs.length > 0 && brainProfile && (
+                <div className="p-4 md:p-6 border-t border-white/10 shrink-0">
+                  <button 
+                    onClick={generateBrainProfile}
+                    disabled={isProcessingBrain}
+                    className="w-full py-3 rounded-xl bg-secondary/20 border border-secondary/40 text-secondary font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-secondary/30 transition-all disabled:opacity-50"
+                  >
+                    {isProcessingBrain ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        <span>RECALIBRANDO...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={16} />
+                        <span>RECALIBRAR NÚCLEO</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </motion.div>
           </div>
         )}
@@ -1625,17 +2058,17 @@ export default function App() {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="w-full max-w-md glass rounded-3xl p-6 md:p-8 space-y-6"
+              className="w-[95%] sm:max-w-md glass rounded-3xl overflow-hidden flex flex-col max-h-[90vh]"
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between">
+              <div className="p-5 md:p-8 border-b border-white/10 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary neon-glow">
                     <Settings size={16} className="md:w-5 md:h-5" />
                   </div>
                   <div>
-                    <h2 className="text-sm md:text-lg font-bold text-white tracking-tight">Configurações</h2>
-                    <p className="text-[8px] md:text-[10px] font-mono text-white/40 uppercase">Ajustes do Sistema</p>
+                    <h2 className="text-sm md:text-lg font-bold text-white tracking-tight">Terminal de Controle</h2>
+                    <p className="text-[8px] md:text-[10px] font-mono text-white/40 uppercase">Protocolos Stark Industries</p>
                   </div>
                 </div>
                 <button onClick={() => setShowSettings(false)} className="text-white/40 hover:text-white transition-colors p-2">
@@ -1643,97 +2076,177 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Chave API OpenRouter</label>
-                  <div className="relative group">
-                    <div className="absolute -inset-0.5 bg-primary rounded-xl opacity-10 group-focus-within:opacity-30 transition-opacity blur" />
-                    <input 
-                      type="password"
-                      value={userApiKey}
-                      onChange={(e) => setUserApiKey(e.target.value)}
-                      placeholder="sk-or-v1-..."
-                      className="relative w-full bg-dark-surface border border-white/10 rounded-xl px-4 py-3 text-xs font-mono text-white outline-none focus:border-primary/50 transition-all"
-                    />
+              <div className="flex-1 overflow-y-auto p-5 md:p-8 space-y-6 custom-scrollbar">
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Chave API OpenRouter</label>
+                    <div className="relative group">
+                      <div className="absolute -inset-0.5 bg-primary rounded-xl opacity-10 group-focus-within:opacity-30 transition-opacity blur" />
+                      <input 
+                        type="password"
+                        value={userApiKey}
+                        onChange={(e) => setUserApiKey(e.target.value)}
+                        placeholder="sk-or-v1-..."
+                        className="relative w-full bg-dark-surface border border-white/10 rounded-xl px-4 py-3 text-xs font-mono text-white outline-none focus:border-primary/50 transition-all"
+                      />
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <p className="text-[9px] text-white/30 font-mono italic">Sua chave é salva localmente no navegador.</p>
+                      <button 
+                        onClick={testConnection}
+                        disabled={testStatus !== 'idle' || !userApiKey.trim()}
+                        className={`text-[9px] font-mono px-2 py-1 rounded border transition-all ${
+                          testStatus === 'success' ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10' :
+                          testStatus === 'error' ? 'text-red-500 border-red-500/30 bg-red-500/10' :
+                          'text-primary border-primary/30 hover:bg-primary/10'
+                        }`}
+                      >
+                        {testStatus === 'testing' ? 'TESTANDO...' : 
+                         testStatus === 'success' ? 'CONEXÃO OK' : 
+                         testStatus === 'error' ? 'FALHA NO TESTE' : 'TESTAR CONEXÃO'}
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <p className="text-[9px] text-white/30 font-mono italic">Sua chave é salva localmente no navegador.</p>
-                    <button 
-                      onClick={testConnection}
-                      disabled={testStatus !== 'idle' || !userApiKey.trim()}
-                      className={`text-[9px] font-mono px-2 py-1 rounded border transition-all ${
-                        testStatus === 'success' ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10' :
-                        testStatus === 'error' ? 'text-red-500 border-red-500/30 bg-red-500/10' :
-                        'text-primary border-primary/30 hover:bg-primary/10'
-                      }`}
-                    >
-                      {testStatus === 'testing' ? 'TESTANDO...' : 
-                       testStatus === 'success' ? 'CONEXÃO OK' : 
-                       testStatus === 'error' ? 'FALHA NO TESTE' : 'TESTAR CONEXÃO'}
-                    </button>
-                  </div>
-                </div>
 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Tema Visual</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button 
-                      onClick={() => setTheme('masculine')}
-                      className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                        theme === 'masculine' 
-                          ? 'bg-primary/20 border-primary/50 text-primary shadow-[0_0_15px_currentColor]' 
-                          : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
-                      }`}
-                    >
-                      Masculino
-                    </button>
-                    <button 
-                      onClick={() => setTheme('feminine')}
-                      className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
-                        theme === 'feminine' 
-                          ? 'bg-primary/20 border-primary/50 text-primary shadow-[0_0_15px_currentColor]' 
-                          : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
-                      }`}
-                    >
-                      Feminino
-                    </button>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Protocolo de Imagem</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button 
+                        onClick={() => setImageProvider('gemini')}
+                        className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                          imageProvider === 'gemini' 
+                            ? 'bg-secondary/20 border-secondary/50 text-secondary shadow-[0_0_15px_currentColor]' 
+                            : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                        }`}
+                      >
+                        Gemini 2.5
+                      </button>
+                      <button 
+                        onClick={() => setImageProvider('pollinations')}
+                        className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                          imageProvider === 'pollinations' 
+                            ? 'bg-secondary/20 border-secondary/50 text-secondary shadow-[0_0_15px_currentColor]' 
+                            : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                        }`}
+                      >
+                        Pollinations
+                      </button>
+                    </div>
+                    {imageProvider === 'gemini' && (
+                      <button 
+                        onClick={() => { setShowSettings(false); setShowKeyManager(true); }}
+                        className="w-full mt-2 py-2 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-xl text-[10px] font-mono flex items-center justify-center gap-2 transition-all"
+                      >
+                        <Key size={12} /> ACESSAR NÚCLEO GOOGLE AI STUDIO
+                      </button>
+                    )}
                   </div>
-                </div>
 
-                <div className="space-y-2">
-                  <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Modelo Neural</label>
-                  <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                    <ModelOption 
-                      selected={model === 'openrouter/healer-alpha'} 
-                      onClick={() => setModel('openrouter/healer-alpha')}
-                      label="Healer Alpha"
-                      desc="Modelo OpenRouter"
-                    />
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Tema Visual</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button 
+                        onClick={() => setTheme('masculine')}
+                        className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                          theme === 'masculine' 
+                            ? 'bg-primary/20 border-primary/50 text-primary shadow-[0_0_15px_currentColor]' 
+                            : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                        }`}
+                      >
+                        Masculino
+                      </button>
+                      <button 
+                        onClick={() => setTheme('feminine')}
+                        className={`p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                          theme === 'feminine' 
+                            ? 'bg-primary/20 border-primary/50 text-primary shadow-[0_0_15px_currentColor]' 
+                            : 'bg-white/5 border-white/5 text-white/40 hover:bg-white/10'
+                        }`}
+                      >
+                        Feminino
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                <div className="p-4 rounded-2xl bg-primary/5 border border-primary/10">
-                  <div className="flex items-center gap-3 text-primary mb-2">
-                    <Sparkles size={16} />
-                    <span className="text-xs font-bold uppercase tracking-wider">Dica Pro</span>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Núcleo de Processamento</label>
+                    <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                      <ModelOption 
+                        selected={model === 'qwen/qwen-2.5-72b-instruct:free'} 
+                        onClick={() => setModel('qwen/qwen-2.5-72b-instruct:free')}
+                        label="Qwen 2.5 72B (FREE)"
+                        desc="Análise de Dados de Alta Performance"
+                      />
+                      <ModelOption 
+                        selected={model === 'openrouter/healer-alpha'} 
+                        onClick={() => setModel('openrouter/healer-alpha')}
+                        label="Healer Alpha"
+                        desc="Protocolo de Assistência Médica/Técnica"
+                      />
+                    </div>
                   </div>
-                  <p className="text-[10px] text-white/60 leading-relaxed font-mono">
-                    O NEURAL-X utiliza o OpenRouter para conectar múltiplos nós de IA. Certifique-se de que sua chave API está configurada corretamente nos segredos do ambiente.
-                  </p>
+
+                  <div className="space-y-4 pt-4 border-t border-white/5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Interface de Voz (ElevenLabs)</label>
+                      <button 
+                        onClick={() => setAutoSpeak(!autoSpeak)}
+                        className={`flex items-center gap-2 px-2 py-1 rounded-lg transition-all ${autoSpeak ? 'bg-primary/20 text-primary' : 'bg-white/5 text-white/40'}`}
+                      >
+                        {autoSpeak ? <Volume2 size={12} /> : <VolumeX size={12} />}
+                        <span className="text-[10px] font-bold uppercase">{autoSpeak ? 'Auto-Voz ON' : 'Auto-Voz OFF'}</span>
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <p className="text-[9px] font-mono text-white/30 uppercase">ElevenLabs API Key</p>
+                        <input 
+                          type="password"
+                          value={elevenLabsApiKey}
+                          onChange={(e) => setElevenLabsApiKey(e.target.value)}
+                          placeholder="Sua chave ElevenLabs..."
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-mono text-white outline-none focus:border-primary/50 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[9px] font-mono text-white/30 uppercase">Voice ID (Clonado)</p>
+                        <input 
+                          type="text"
+                          value={elevenLabsVoiceId}
+                          onChange={(e) => setElevenLabsVoiceId(e.target.value)}
+                          placeholder="ID da sua voz clonada..."
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-mono text-white outline-none focus:border-primary/50 transition-all"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-primary/5 border border-primary/10">
+                    <div className="flex items-center gap-3 text-primary mb-2">
+                      <Sparkles size={16} />
+                      <span className="text-xs font-bold uppercase tracking-wider">Dica Pro</span>
+                    </div>
+                    <p className="text-[10px] text-white/60 leading-relaxed font-mono">
+                      O NEURAL-X utiliza o OpenRouter para conectar múltiplos nós de IA. Certifique-se de que sua chave API está configurada corretamente nos segredos do ambiente.
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              <button 
-                onClick={saveSettings}
-                disabled={saveStatus}
-                className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-[0.2em] transition-all ${
-                  saveStatus 
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
-                    : 'bg-white/5 hover:bg-white/10 text-white'
-                }`}
-              >
-                {saveStatus ? 'CONFIGURAÇÃO SALVA' : 'Salvar Configuração'}
-              </button>
+              <div className="p-5 md:p-8 border-t border-white/10 shrink-0">
+                <button 
+                  onClick={saveSettings}
+                  disabled={saveStatus}
+                  className={`w-full py-3 rounded-xl text-xs font-bold uppercase tracking-[0.2em] transition-all ${
+                    saveStatus 
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                      : 'bg-white/5 hover:bg-white/10 text-white border border-white/10'
+                  }`}
+                >
+                  {saveStatus ? 'CONFIGURAÇÃO SALVA' : 'Salvar Configuração'}
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -1746,9 +2259,9 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="w-full max-w-md glass rounded-3xl border border-white/10 overflow-hidden shadow-2xl"
+              className="w-full max-w-md glass rounded-3xl border border-white/10 overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
             >
-              <div className="p-6 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-primary/10 to-transparent">
+              <div className="p-6 border-b border-white/10 flex items-center justify-between bg-gradient-to-r from-primary/10 to-transparent shrink-0">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary neon-glow">
                     <Key size={16} className="md:w-5 md:h-5" />
@@ -1775,7 +2288,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
                 {/* Add New Key */}
                 {geminiKeys.length < 15 ? (
                   <div className="space-y-3 p-4 rounded-2xl bg-white/5 border border-white/5">
